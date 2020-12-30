@@ -121,162 +121,57 @@ let _j = Js_pass_debug.dump
 (** Actually simplify_lets is kind of global optimization since it requires you to know whether 
     it's used or not 
 *)
-let compile  
-    (output_prefix : string) 
-    (lam : Lambda.lambda)   = 
+let compile  (_output_prefix : string) (lam : Lambda.lambda)   = 
   let export_idents = Translmod.get_export_identifiers() in
   let export_ident_sets = Set_ident.of_list export_idents in 
-  (* To make toplevel happy - reentrant for js-demo *)
-  let () = 
-#if undefined BS_RELEASE_BUILD then     
-    Ext_list.iter export_idents 
-      (fun id -> Ext_log.dwarn ~__POS__ "export idents: %s/%d"  id.name id.stamp) ;
-#end      
-    Lam_compile_env.reset () ;
-  in 
-  let lam, may_required_modules = Lam_convert.convert export_ident_sets lam in 
-
-  
-  let lam = _d "initial"  lam in
+  let () = Lam_compile_env.reset () in
+  let lam, may_required_modules = Lam_convert.convert export_ident_sets lam in   
   let lam  = Lam_pass_deep_flatten.deep_flatten lam in
-  let lam = _d  "flatten0" lam in
-  let meta  : Lam_stats.t = 
-    Lam_stats.make 
-      ~export_idents
-        ~export_ident_sets in 
+  let meta  : Lam_stats.t = Lam_stats.make ~export_idents ~export_ident_sets in 
   let () = Lam_pass_collect.collect_info meta lam in 
-  let lam = 
-    let lam =  
-      lam
-      |> _d "flattern1"
-      |>  Lam_pass_exits.simplify_exits
-      |> _d "simplyf_exits"
-      |> (fun lam -> Lam_pass_collect.collect_info meta lam; lam)
-      |>  Lam_pass_remove_alias.simplify_alias  meta
-      |> _d "simplify_alias"
-      |> Lam_pass_deep_flatten.deep_flatten
-      |> _d  "flatten2"
-    in  (* Inling happens*)
-
-    let ()  = Lam_pass_collect.collect_info meta lam in
-    let lam = Lam_pass_remove_alias.simplify_alias meta lam  in
-    let lam = Lam_pass_deep_flatten.deep_flatten lam in
-    let ()  = Lam_pass_collect.collect_info meta lam in
-    let lam = 
-      lam
-      |> _d "alpha_before"
-      |> Lam_pass_alpha_conversion.alpha_conversion meta
-      |> _d "alpha_after"
-      |> Lam_pass_exits.simplify_exits in    
-    let () = Lam_pass_collect.collect_info meta lam in
-
-
+  let lam =  
     lam
-    |> _d "simplify_alias_before"
-    |>  Lam_pass_remove_alias.simplify_alias meta 
-    |> _d "alpha_conversion"
-    |>  Lam_pass_alpha_conversion.alpha_conversion meta
-    |> _d  "before-simplify_lets"
-    (* we should investigate a better way to put different passes : )*)
-    |> Lam_pass_lets_dce.simplify_lets 
-
-    |> _d "before-simplify-exits"
-    (* |> (fun lam -> Lam_pass_collect.collect_info meta lam 
-       ; Lam_pass_remove_alias.simplify_alias meta lam) *)
-    (* |> Lam_group_pass.scc_pass
-       |> _d "scc" *)
-    |> Lam_pass_exits.simplify_exits
-    |> _d "simplify_lets"
-#if undefined BS_RELEASE_BUILD then    
-    |> (fun lam -> 
-       let () = 
-        Ext_log.dwarn ~__POS__ "Before coercion: %a@." Lam_stats.print meta in 
-      Lam_check.check !Location.input_name lam
-    ) 
-#end    
-  in
-
-  let ({Lam_coercion.groups = groups } as coerced_input , meta) = 
-    Lam_coercion.coerce_and_group_big_lambda  meta lam
-  in 
-
-#if undefined BS_RELEASE_BUILD then   
-  let () =
-    Ext_log.dwarn ~__POS__ "After coercion: %a@." Lam_stats.print meta ;
-    if Js_config.get_diagnose () then
-      let f =
-        Ext_filename.new_extension !Location.input_name  ".lambda" in
-      Ext_fmt.with_file_as_pp f begin fun fmt ->
-        Format.pp_print_list ~pp_sep:Format.pp_print_newline
-          Lam_group.pp_group  fmt (coerced_input.groups) 
-      end;
-  in
-#end  
+    |>  Lam_pass_exits.simplify_exits
+    |> (fun lam -> Lam_pass_collect.collect_info meta lam; lam)
+    |>  Lam_pass_remove_alias.simplify_alias  meta
+    |> Lam_pass_deep_flatten.deep_flatten in
+  let ()  = Lam_pass_collect.collect_info meta lam in
+  let lam = Lam_pass_remove_alias.simplify_alias meta lam  in
+  let lam = Lam_pass_deep_flatten.deep_flatten lam in
+  let ()  = Lam_pass_collect.collect_info meta lam in
+  let lam = 
+    lam
+    |> Lam_pass_alpha_conversion.alpha_conversion meta
+    |> Lam_pass_exits.simplify_exits in    
+  let () = Lam_pass_collect.collect_info meta lam in
+  let lam = lam
+  |>  Lam_pass_remove_alias.simplify_alias meta 
+  |>  Lam_pass_alpha_conversion.alpha_conversion meta
+  |> Lam_pass_lets_dce.simplify_lets 
+  |> Lam_pass_exits.simplify_exits in
+  let ({Lam_coercion.groups = groups }, meta) = Lam_coercion.coerce_and_group_big_lambda meta lam in 
   let maybe_pure = no_side_effects groups in
-#if undefined BS_RELEASE_BUILD then 
-  let () = Ext_log.dwarn ~__POS__ "\n@[[TIME:]Pre-compile: %f@]@."  (Sys.time () *. 1000.) in      
-#end  
-  let body  =     
-    Ext_list.map groups (fun group -> compile_group meta group)
-    |> Js_output.concat
-    |> Js_output.output_as_block
-  in
-#if undefined BS_RELEASE_BUILD then 
-  let () = Ext_log.dwarn ~__POS__ "\n@[[TIME:]Post-compile: %f@]@."  (Sys.time () *. 1000.) in      
-#end    
-  (* The file is not big at all compared with [cmo] *)
-  (* Ext_marshal.to_file (Ext_path.chop_extension filename ^ ".mj")  js; *)
+  let body  = Ext_list.map groups (fun group -> compile_group meta group)
+              |> Js_output.concat
+              |> Js_output.output_as_block in
   let meta_exports = meta.exports in 
   let export_set = Set_ident.of_list meta_exports in 
-  let js : J.program = 
-      { 
-        exports = meta_exports ; 
-        export_set; 
-        block = body}
-  in
-  js 
-  |> _j "initial"
+  let js : J.program = { exports = meta_exports ; export_set; block = body} in
+  let program = js 
   |> Js_pass_flatten.program
-  |> _j "flattern"
   |> Js_pass_tailcall_inline.tailcall_inline
-  |> _j "inline_and_shake"
   |> Js_pass_flatten_and_mark_dead.program
-  |> _j "flatten_and_mark_dead"
-  (* |> Js_inline_and_eliminate.inline_and_shake *)
-  (* |> _j "inline_and_shake" *)
   |> (fun js -> ignore @@ Js_pass_scope.program  js ; js )
-  |> Js_shake.shake_program
-  |> _j "shake"
-  |> ( fun (program:  J.program) -> 
-      let external_module_ids : Lam_module_ident.t list = 
-        if !Js_config.all_module_aliases then []
-        else
-          let hard_deps = 
-            Js_fold_basic.calculate_hard_dependencies program.block in  
-          Lam_compile_env.populate_required_modules  
-            may_required_modules hard_deps ;        
-          Ext_list.sort_via_array (Lam_module_ident.Hash_set.to_list hard_deps)
-            (fun id1 id2 ->
-               Ext_string.compare (Lam_module_ident.name id1) (Lam_module_ident.name id2)
-            ) 
-      in
-      Warnings.check_fatal();
-      let effect = 
-        Lam_stats_export.get_dependent_module_effect
-        maybe_pure external_module_ids in 
-      let v : Js_cmj_format.t = 
-        Lam_stats_export.export_to_cmj 
-          meta  
-          effect 
-          coerced_input.export_map          
-          (if Ext_char.is_lower_case (Filename.basename output_prefix).[0] then Little else Upper)
-      in
-      (if not !Clflags.dont_write_files then
-         Js_cmj_format.to_file 
-          ~check_exists:(not !Js_config.force_cmj)
-           (output_prefix ^ Literals.suffix_cmj) v);
-      {J.program = program ; side_effect = effect ; modules = external_module_ids }      
-    )
+  |> Js_shake.shake_program in
+  let external_module_ids : Lam_module_ident.t list =
+      let hard_deps = Js_fold_basic.calculate_hard_dependencies program.block in  
+      Lam_compile_env.populate_required_modules may_required_modules hard_deps;
+      Ext_list.sort_via_array (Lam_module_ident.Hash_set.to_list hard_deps)
+          (fun id1 id2 -> Ext_string.compare (Lam_module_ident.name id1) (Lam_module_ident.name id2)) 
+  in
+  Warnings.check_fatal();
+  let effect = Lam_stats_export.get_dependent_module_effect maybe_pure external_module_ids in 
+  { J.program = program ; side_effect = effect ; modules = external_module_ids }      
 ;;
 
 let (//) = Filename.concat  
